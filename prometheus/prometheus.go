@@ -67,13 +67,13 @@ type Option struct {
 	Method bool // Default: true
 }
 
-// ServerHandler is a http handler to handle the prometheus metrics based on RED.
+// ServerHandler is a http handler to handle the prometheus metrics
+// based on RED without E.
 type ServerHandler struct {
 	http.Handler
 	Option
 
 	labels           []string
-	requestsError    *prometheus.CounterVec
 	requestsTotal    *prometheus.CounterVec
 	requestDurations *prometheus.HistogramVec
 }
@@ -113,20 +113,12 @@ func (sh *ServerHandler) Init() {
 		sh.labels = append(sh.labels, "code")
 	}
 
-	sh.requestsError = promauto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: sh.Namespace,
-		Subsystem: sh.Subsystem,
-
-		Name: "http_request_errors_total",
-		Help: "The total number of the http request with the error respond",
-	}, sh.labels)
-
 	sh.requestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: sh.Namespace,
 		Subsystem: sh.Subsystem,
 
 		Name: "http_requests_total",
-		Help: "The total number of the http request",
+		Help: "The total number of the http requests",
 	}, sh.labels)
 
 	sh.requestDurations = promauto.NewHistogramVec(prometheus.HistogramOpts{
@@ -158,10 +150,6 @@ func (sh *ServerHandler) handle(w http.ResponseWriter, r *http.Request, start ti
 		case "method":
 			labels["method"] = r.Method
 		}
-	}
-
-	if code >= 500 {
-		sh.requestsError.With(labels).Inc()
 	}
 
 	sh.requestsTotal.With(labels).Inc()
