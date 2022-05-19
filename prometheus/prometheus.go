@@ -17,6 +17,7 @@ package prometheus
 import (
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -33,12 +34,12 @@ var DefaultHistogramBuckets = []float64{
 
 // Middleware returns a new http handler middleware supporting prometheus.
 func Middleware(option *Option) middlewares.Middleware {
-	sh := &ServerHandler{}
+	sh := NewServerHandler(nil)
 	if option != nil {
 		sh.Option = *option
 	}
-	sh.Init()
 
+	sh._init()
 	return func(wrappedNext http.Handler) (new http.Handler) {
 		return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 			sh.Serve(wrappedNext, rw, r)
@@ -54,6 +55,8 @@ type ResponseWriter interface {
 
 // Option is used to configure the prometheus http handler.
 type Option struct {
+	prometheus.Registerer
+
 	// Default: ""
 	Namespace string
 	Subsystem string
@@ -73,6 +76,7 @@ type ServerHandler struct {
 	http.Handler
 	Option
 
+	once             sync.Once
 	labels           []string
 	requestsTotal    *prometheus.CounterVec
 	requestDurations *prometheus.HistogramVec
@@ -81,19 +85,18 @@ type ServerHandler struct {
 // NewServerHandler returns a new http handler supporting the prometheus metrics
 // based on RED.
 func NewServerHandler(handler http.Handler) *ServerHandler {
-	sh := &ServerHandler{
+	return &ServerHandler{
 		Handler: handler,
 		Option:  Option{Method: true, Code: true},
 	}
-	sh.Init()
-	return sh
 }
 
 // WrappedHandler returns the wrapped http handler.
 func (sh *ServerHandler) WrappedHandler() http.Handler { return sh.Handler }
 
 // Init initializes the metrics.
-func (sh *ServerHandler) Init() {
+func (sh *ServerHandler) _init() { sh.once.Do(sh._init2) }
+func (sh *ServerHandler) _init2() {
 	_buckets := sh.Buckets
 	if len(_buckets) == 0 {
 		_buckets = DefaultHistogramBuckets
@@ -113,7 +116,14 @@ func (sh *ServerHandler) Init() {
 		sh.labels = append(sh.labels, "code")
 	}
 
-	sh.requestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	var factory promauto.Factory
+	if sh.Registerer == nil {
+		factory = promauto.With(prometheus.DefaultRegisterer)
+	} else {
+		factory = promauto.With(sh.Registerer)
+	}
+
+	sh.requestsTotal = factory.NewCounterVec(prometheus.CounterOpts{
 		Namespace: sh.Namespace,
 		Subsystem: sh.Subsystem,
 
@@ -121,7 +131,7 @@ func (sh *ServerHandler) Init() {
 		Help: "The total number of the http requests",
 	}, sh.labels)
 
-	sh.requestDurations = promauto.NewHistogramVec(prometheus.HistogramOpts{
+	sh.requestDurations = factory.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: sh.Namespace,
 		Subsystem: sh.Subsystem,
 
@@ -158,6 +168,7 @@ func (sh *ServerHandler) handle(w http.ResponseWriter, r *http.Request, start ti
 
 // Serve uses the given http handler to serve the request with w and r.
 func (sh *ServerHandler) Serve(h http.Handler, w http.ResponseWriter, r *http.Request) (err error) {
+	sh._init()
 	defer sh.handle(w, r, time.Now())
 	if hh, ok := h.(middlewares.Handler); ok {
 		err = hh.HandleHTTP(w, r)
